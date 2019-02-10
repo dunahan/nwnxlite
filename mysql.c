@@ -24,6 +24,7 @@ static struct {
 #define STORE_ERROR() (strcpy(sql.lastError, mysql_error(&sql.mysql)))
 
 void sql_init() {
+	LOG_INFO("SQL init");
 	mysql_init(&sql.mysql);
 
 	if (!mysql_real_connect(&sql.mysql, cfg.host, cfg.username, cfg.password, cfg.database, 0, NULL, 0)) {
@@ -32,6 +33,7 @@ void sql_init() {
 }
 void sql_shutdown() {
 	mysql_close(&sql.mysql);
+	LOG_INFO("SQL shutdown");
 }
 int sql_is_connected() {
 	int res = mysql_query(&sql.mysql, "SELECT 1") == 0;
@@ -42,25 +44,30 @@ int sql_is_connected() {
 
 
 void sql_destroy_prepared_query() {
-	mysql_free_result(sql.result);
+	if (sql.result) {
+		mysql_free_result(sql.result);
+		sql.result = NULL;
+	}
 	mysql_stmt_free_result(sql.stmt);
 	mysql_stmt_close(sql.stmt);
 	sql.stmt = NULL;
 }
 int sql_prepare_query(const char *query) {
+	LOG_INFO("SQL prepare query: %s", query);
 	if (sql.stmt) {
+		LOG_DEBUG("Destroying previous query");
 		sql_destroy_prepared_query();
 	}
 
 	sql.stmt = mysql_stmt_init(&sql.mysql);
 	if (!sql.stmt) {
-		LOG_ERROR("Failed to prepare statement: %s", STORE_ERROR());
+		LOG_ERROR("Failed to initialize statement: %s", STORE_ERROR());
 		return 0;
 	}
 
 	if (!mysql_stmt_prepare(sql.stmt, query, strlen(query))) {
 		sql.paramCount = mysql_stmt_param_count(sql.stmt);
-		LOG_INFO("Detected %d parameters.", sql.paramCount);
+		LOG_DEBUG("Detected %d parameters.", sql.paramCount);
 		assert(sql.paramCount < count_of(sql.params));
 		return 1;
 	}
@@ -82,7 +89,7 @@ int sql_execute_prepared_query() {
 	}
 
 	if (!mysql_stmt_execute(sql.stmt)) {
-		LOG_INFO("Successful query");
+		LOG_DEBUG("Successful query");
 		sql.result = mysql_stmt_result_metadata(sql.stmt);
 		if (sql.result) {
 			sql.columns = mysql_num_fields(sql.result);
@@ -102,36 +109,44 @@ int sql_execute_prepared_query() {
 	return 0;
 }
 int sql_ready_to_read_next_row() {
-	return (sql.affectedRows != -1) && (sql.currentRow != sql.totalRows);
+	return sql.stmt && (sql.affectedRows != -1) && (sql.currentRow != sql.totalRows);
 }
 int sql_read_next_row() {
-	
+	if (!sql.stmt)
+		return 0;
+
 	int fetchResult = mysql_stmt_fetch(sql.stmt);
 	if (fetchResult == MYSQL_NO_DATA) {
 		return 0;
 	}
-	else if (fetchResult) {
+	else if (fetchResult == 1) {
 		LOG_ERROR("Error executing mysql_stmt_fetch - error: '%s'", STORE_ERROR());
 		return 0;
 	}
 
 	for (int i = 0; i < sql.columns; i++) {
-		sql.resultBuffer[i] = realloc(sql.resultBuffer[i], sql.lengths[i]);
-		assert(sql.resultBuffer[i]);
+		sql.lengths[i] += 128;
+		sql.resultBuffer[i] = realloc(sql.resultBuffer[i], sql.lengths[i] + 1);
+		//assert(sql.resultBuffer[i]);
+		LOG_DEBUG("Column %d of %d, length %d; res: %p", i, sql.columns, sql.lengths[i], sql.resultBuffer[i]);
 		
 		sql.binds[i].buffer = sql.resultBuffer[i];
 		sql.binds[i].buffer_length = sql.lengths[i];
-		mysql_stmt_fetch_column(sql.stmt, &sql.binds[i], i, 0);
+		int fetched = mysql_stmt_fetch_column(sql.stmt, &sql.binds[i], i, 0);
+		sql.resultBuffer[i][sql.lengths[i]] = 0;
+		LOG_DEBUG("fetched = %d", fetched);
 	}
 	sql.currentRow++;
 	return 1;
 }
 
 char *sql_read_data_in_active_row(int column) {
-	if (column < 0 || column >= sql.columns)
-		return NULL;
+	if (!sql.stmt || column < 0 || column >= sql.columns)
+		return "";
 
-	return sql.resultBuffer[column];
+	char *value = sql.resultBuffer[column] ? sql.resultBuffer[column] : "";
+	LOG_DEBUG("Reading column %d, value \"%s\"", column, value);
+	return value;
 }
 int sql_get_affected_rows() {
 	return sql.affectedRows;
