@@ -1,0 +1,12 @@
+Libini1 V1.6 Release 3:
+
+*Tested with Visual Basic and added appropriate bas module.
+
+*Removed ini_listIndexLength.  When ini_listDelims is used
+ ini_dataLength now returns the value normally provided
+ by ini_listIndexLength.
+
+
+libini1, Version 1.6
+
+Initial Sourceforge Release.
